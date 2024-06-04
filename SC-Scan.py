@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from collections import defaultdict
 from solcx import compile_standard, install_solc, set_solc_version
 from web3 import Web3
 from slither import Slither
@@ -58,7 +59,15 @@ def compile_contract(contract_path, solc_version):
 def detect_issues(contract_path):
     slither = Slither(contract_path)
 
-    issues = []
+    issues = defaultdict(list)
+
+    def add_issue(issue_type, description, severity, contract, function=None):
+        color = Fore.RED if severity == "critical" else Fore.YELLOW if severity == "warning" else Fore.BLUE
+        issue_message = color + f"{issue_type}: {description}"
+        if function:
+            issues[contract].append(f"{issue_message} (Function: {function})")
+        else:
+            issues[contract].append(issue_message)
 
     # Detect Arbitrary From
     for contract in slither.contracts:
@@ -66,73 +75,137 @@ def detect_issues(contract_path):
             for node in function.nodes:
                 if node.type == "HighLevelCall" and node.expression:
                     if "from" in str(node.expression):
-                        issues.append(Fore.RED + f"Arbitrary 'from' address found in function {function.name} in contract {contract.name}")
+                        add_issue(
+                            "Arbitrary 'from' Address",
+                            "Uses 'from' in a call, which may allow unauthorized transactions.",
+                            "critical",
+                            contract.name,
+                            function.name
+                        )
 
     # Detect Functions Default Visibility
     for contract in slither.contracts:
         for function in contract.functions:
             if function.visibility == "default":
-                issues.append(Fore.YELLOW + f"Function {function.name} in contract {contract.name} has default visibility")
+                add_issue(
+                    "Default Visibility",
+                    "Has default visibility, making it accessible to anyone.",
+                    "warning",
+                    contract.name,
+                    function.name
+                )
 
     # Detect Uninitialized Storage Pointer
     for contract in slither.contracts:
         for variable in contract.state_variables:
             if variable.is_stored and variable.uninitialized:
-                issues.append(Fore.RED + f"Uninitialized storage pointer found in contract {contract.name}")
+                add_issue(
+                    "Uninitialized Storage Pointer",
+                    "Can lead to unpredictable behavior.",
+                    "critical",
+                    contract.name
+                )
 
     # Detect Reentrancy
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.type == "HighLevelCall" and function.is_payable:
-                    issues.append(Fore.RED + f"Potential reentrancy in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Potential Reentrancy",
+                        "Ensure proper reentrancy guards are in place.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect Delegatecall
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.type == "HighLevelCall" and node.expression and "delegatecall" in str(node.expression):
-                    issues.append(Fore.RED + f"Insecure delegatecall in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Insecure Delegatecall",
+                        "Delegatecalls can lead to code execution in the context of the caller contract.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect Blockhash Dependence
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.expression and "block.blockhash" in str(node.expression):
-                    issues.append(Fore.RED + f"Blockhash dependence found in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Blockhash Dependence",
+                        "This can be exploited to manipulate block hashes.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect Insecure Randomness
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.expression and ("block.timestamp" in str(node.expression) or "block.difficulty" in str(node.expression)):
-                    issues.append(Fore.RED + f"Insecure randomness source found in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Insecure Randomness",
+                        "Avoid using block properties for randomness.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect usage of tx.origin
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.expression and "tx.origin" in str(node.expression):
-                    issues.append(Fore.RED + f"Usage of tx.origin found in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Usage of tx.origin",
+                        "This can be exploited in phishing attacks.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect unrestricted ether withdrawal
     for contract in slither.contracts:
         for function in contract.functions:
             if function.name == "withdraw" and function.visibility == "public":
-                issues.append(Fore.RED + f"Unrestricted ether withdrawal found in function {function.name} in contract {contract.name}")
+                add_issue(
+                    "Unrestricted Ether Withdrawal",
+                    "This can allow unauthorized withdrawals.",
+                    "critical",
+                    contract.name,
+                    function.name
+                )
 
     # Detect integer overflows and underflows
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.expression and ("+" in str(node.expression) or "-" in str(node.expression)):
-                    issues.append(Fore.RED + f"Potential overflow/underflow in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Potential Overflow/Underflow",
+                        "Use safe math libraries to prevent this.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect hardcoded addresses
     for contract in slither.contracts:
         for variable in contract.state_variables:
             if variable.type == "address" and variable.value:
-                issues.append(Fore.YELLOW + f"Hardcoded address found in contract {contract.name}")
+                add_issue(
+                    "Hardcoded Address",
+                    "Avoid using hardcoded addresses for better flexibility and security.",
+                    "warning",
+                    contract.name
+                )
 
     # Detect missing event emissions
     for contract in slither.contracts:
@@ -141,14 +214,131 @@ def detect_issues(contract_path):
                 state_change = any(node.state_variables_written for node in function.nodes)
                 emits_event = any(node.type == "EmitStatement" for node in function.nodes)
                 if state_change and not emits_event:
-                    issues.append(Fore.YELLOW + f"Missing event emission in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Missing Event Emission",
+                        "Emit events for critical state changes.",
+                        "warning",
+                        contract.name,
+                        function.name
+                    )
 
     # Detect low-level calls
     for contract in slither.contracts:
         for function in contract.functions:
             for node in function.nodes:
                 if node.expression and ("call" in str(node.expression) or "delegatecall" in str(node.expression) or "send" in str(node.expression)):
-                    issues.append(Fore.RED + f"Low-level call found in function {function.name} in contract {contract.name}")
+                    add_issue(
+                        "Low-Level Call",
+                        "Use higher-level functions for better safety and readability.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect access control issues
+    for contract in slither.contracts:
+        for function in contract.functions:
+            if function.visibility in ["public", "external"] and not function.is_constructor:
+                has_access_control = any("onlyOwner" in str(node.expression) or "onlyAdmin" in str(node.expression) for node in function.nodes if node.expression)
+                if not has_access_control:
+                    add_issue(
+                        "Access Control Issue",
+                        "Ensure access control is properly implemented.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect use of deprecated functions
+    deprecated_functions = ["suicide", "throw"]
+    for contract in slither.contracts:
+        for function in contract.functions:
+            for node in function.nodes:
+                if node.expression and any(func in str(node.expression) for func in deprecated_functions):
+                    add_issue(
+                        "Deprecated Function",
+                        "Replace deprecated functions with their modern equivalents.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect improper handling of exceptions
+    for contract in slither.contracts:
+        for function in contract.functions:
+            for node in function.nodes:
+                if node.type == "LowLevelCall" and not any(handler in str(node.expression) for handler in ["require", "assert", "revert"]):
+                    add_issue(
+                        "Improper Exception Handling",
+                        "Ensure proper exception handling mechanisms are in place.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect front-running vulnerabilities
+    for contract in slither.contracts:
+        for function in contract.functions:
+            for node in function.nodes:
+                if node.expression and "block.timestamp" in str(node.expression):
+                    add_issue(
+                        "Front-Running Vulnerability",
+                        "Avoid using block timestamps for critical logic.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect gas limit issues
+    for contract in slither.contracts:
+        for function in contract.functions:
+            if len(function.nodes) > 20:  # Arbitrary threshold for complexity
+                add_issue(
+                    "Gas Limit Issue",
+                    "Optimize the function to reduce gas consumption.",
+                    "critical",
+                    contract.name,
+                    function.name
+                )
+
+    # Detect timestamp dependence
+    for contract in slither.contracts:
+        for function in contract.functions:
+            for node in function.nodes:
+                if node.expression and "block.timestamp" in str(node.expression):
+                    add_issue(
+                        "Timestamp Dependence",
+                        "Avoid using block timestamps for time-sensitive logic.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect shadowing variables
+    for contract in slither.contracts:
+        for function in contract.functions:
+            for variable in function.variables:
+                if any(state_var.name == variable.name for state_var in contract.state_variables):
+                    add_issue(
+                        "Shadowing Variable",
+                        "Avoid variable shadowing to prevent bugs.",
+                        "critical",
+                        contract.name,
+                        function.name
+                    )
+
+    # Detect reentrancy with multiple calls
+    for contract in slither.contracts:
+        for function in contract.functions:
+            call_count = sum(1 for node in function.nodes if node.type == "HighLevelCall")
+            if call_count > 1:
+                add_issue(
+                    "Reentrancy with Multiple Calls",
+                    "Ensure proper reentrancy guards are in place.",
+                    "critical",
+                    contract.name,
+                    function.name
+                )
 
     return issues
 
@@ -182,9 +372,12 @@ def main():
     # Detect issues
     issues = detect_issues(contract_path)
     if issues:
-        print(Fore.YELLOW + "Issues found:")
-        for issue in issues:
-            print(issue)
+        print(Fore.YELLOW + "Issues found:\n")
+        for contract, contract_issues in issues.items():
+            print(Fore.BLUE + f"Contract: {contract}")
+            for issue in contract_issues:
+                print(f"  - {issue}")
+            print()  # New line for better readability
     else:
         print(Fore.GREEN + "No issues found")
 
