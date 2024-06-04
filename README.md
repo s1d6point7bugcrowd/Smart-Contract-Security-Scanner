@@ -28,4 +28,4 @@ To use this script, you need to have Python installed along with the necessary l
 pip install py-solc-x web3 slither-analyzer colorama
 pip install solc-select
 
-When prompted, enter the path to the Solidity contract file you want to test, e.g., /home/kali/ExenToken.sol
+When prompted, enter the path to the Solidity contract file you want to test, e.g., /home/kali/redacted.sol
