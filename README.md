@@ -4,14 +4,72 @@ This project provides a Python script to analyze Solidity smart contracts for co
 
 ## Features
 
-- Detects uninitialized storage pointers
-- Identifies potential overflow/underflow issues
-- Checks for missing event emissions
-- Finds low-level calls
-- Alerts on arbitrary 'from' addresses
-- Flags usage of `tx.origin`
-- Detects unrestricted ether withdrawals
-- Identifies hardcoded addresses
+### Arbitrary 'from' Address:
+    Checks if the from address in a call is used, which may allow unauthorized transactions.
+
+### Default Visibility:
+    Checks if functions have default visibility, making them accessible to anyone.
+
+### Potential Reentrancy:
+    Checks if payable functions have proper reentrancy guards.
+
+### Insecure Delegatecall:
+    Checks if delegatecall is used, which can lead to code execution in the context of the caller contract.
+
+### Blockhash Dependence:
+    Checks if block.blockhash is used, which can be manipulated to exploit block hashes.
+
+### Insecure Randomness:
+    Checks if block.timestamp or block.difficulty is used for randomness, which is insecure.
+
+### Usage of tx.origin:
+    Checks if tx.origin is used, which can be exploited in phishing attacks.
+
+### Low-Level Call:
+    Checks if low-level calls (call, delegatecall, send) are used without proper safety and readability.
+
+### Improper Exception Handling:
+    Checks if low-level calls are used without proper exception handling mechanisms like require, assert, or revert.
+
+### Unchecked Low-Level Call:
+    Checks if low-level calls are used without checking their success.
+
+### Unrestricted Ether Withdrawal:
+    Checks if Ether withdrawals can be made without proper restrictions, allowing unauthorized withdrawals.
+
+### Gas Limit Issue:
+    Checks if functions have a high number of nodes, potentially causing gas limit issues.
+
+### External Function Call:
+    Warns about potentially unsafe external calls.
+
+### Uninitialized Storage Pointer:
+    Checks if storage pointers are uninitialized, which can lead to unpredictable behavior.
+
+### Hardcoded Address:
+    Checks if addresses are hardcoded, reducing flexibility and security.
+
+### Uninitialized Variable:
+    Checks if variables are uninitialized, leading to unpredictable behavior.
+
+### Variable Shadowing:
+    Checks if local variables shadow state variables, which can lead to bugs.
+
+### Missing Event Emission:
+    Checks if critical state changes are made without emitting events for transparency and tracking.
+
+### Deprecated Function:
+    Checks if deprecated functions like suicide or throw are used.
+
+### Missing Function Modifier:
+    Checks if critical functions lack necessary modifiers (e.g., onlyOwner).
+
+### Reentrancy with Multiple Calls:
+    Checks if functions have multiple high-level calls, potentially leading to reentrancy issues.
+
+### Missing ERC20 Return Value Check:
+    Checks if ERC20 operations (e.g., transfer, approve, transferFrom) are used without checking their return values.
+
 
 ## Installation
 
