@@ -82,9 +82,8 @@ To use this script, you need to have Python installed along with the necessary l
 
 ### Install Required Libraries
 
-```bash
-pip install py-solc-x web3 slither-analyzer colorama
-pip install solc-select
+pip install web3 py-solc-x slither-analyzer colorama termcolor tabulate
+
 
 
 
