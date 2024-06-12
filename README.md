@@ -153,4 +153,3 @@ Issues found:
                                                                        
 Issues saved to /home/kali/smart_contract_vulnerabilities.html
 
-When prompted, enter the path to the Solidity contract file you want to test, e.g., /home/kali/redacted.sol
