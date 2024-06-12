@@ -4,10 +4,12 @@ pragma solidity ^0.8.0;
 contract VulnerableContract {
     address public owner;
     mapping(address => uint256) public balances;
+    uint256 public totalSupply;
 
     // Constructor
     constructor() {
         owner = msg.sender;
+        totalSupply = 1000000;
     }
 
     // Function to deposit Ether into the contract
@@ -67,5 +69,48 @@ contract VulnerableContract {
     function implicitConversion() public {
         uint8 smallNumber = 255;
         uint256 bigNumber = smallNumber; // Implicit type conversion
+    }
+
+    // Function vulnerable to overflow
+    function overflow() public {
+        uint256 max = 2**256 - 1;
+        totalSupply += max; // Overflow vulnerability
+    }
+
+    // Function vulnerable to underflow
+    function underflow() public {
+        uint256 min = 0;
+        totalSupply -= min + 1; // Underflow vulnerability
+    }
+
+    // Function vulnerable to integer division error
+    function divisionError(uint256 amount) public view returns (uint256) {
+        require(amount > 0, "Amount must be greater than zero");
+        return totalSupply / amount; // Division error vulnerability
+    }
+
+    // Function with unrestricted access to selfdestruct
+    function selfDestructContract() public {
+        selfdestruct(payable(owner));
+    }
+
+    // Function that uses block.number for randomness
+    function getAnotherRandomNumber() public view returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(block.number, block.timestamp)));
+    }
+
+    // Function vulnerable to flash loan exploit
+    function flashLoanExploit(uint256 amount) public {
+        require(amount <= totalSupply, "Amount exceeds total supply");
+        balances[msg.sender] += amount;
+        totalSupply -= amount;
+        // Some operation that should be atomic
+        totalSupply += amount;
+        balances[msg.sender] -= amount;
+    }
+
+    // Function to lock contract operations
+    function lockContract() public {
+        selfdestruct(payable(owner));
     }
 }
