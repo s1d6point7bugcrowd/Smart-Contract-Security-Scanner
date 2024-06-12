@@ -6,6 +6,7 @@ from slither import Slither
 from colorama import Fore, Style, init
 from termcolor import colored
 from tabulate import tabulate
+import html
 
 # Initialize colorama
 init(autoreset=True)
@@ -317,6 +318,46 @@ def display_issues(issues):
             rows.append([contract, function, colored(issue_type, color), colored(description, color), severity, explanation])
 
     print(tabulate(rows, headers, tablefmt="grid"))
+    return headers, rows
+
+# Function to save issues to an HTML file
+def save_issues_to_html(headers, rows, output_path):
+    html_content = f"""
+    <html>
+    <head>
+        <title>Smart Contract Vulnerabilities</title>
+        <style>
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                border: 1px solid black;
+                padding: 8px;
+                text-align: left;
+            }}
+            th {{
+                background-color: #f2f2f2;
+            }}
+        </style>
+    </head>
+    <body>
+        <h2>Smart Contract Vulnerabilities</h2>
+        <table>
+            <thead>
+                <tr>
+                    {''.join(f'<th>{header}</th>' for header in headers)}
+                </tr>
+            </thead>
+            <tbody>
+                {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+    with open(output_path, 'w') as file:
+        file.write(html_content)
 
 # Main function to run the script
 def main():
@@ -349,7 +390,10 @@ def main():
     issues = detect_issues(contract_path)
     if issues:
         print(Fore.YELLOW + "Issues found:\n")
-        display_issues(issues)
+        headers, rows = display_issues(issues)
+        output_path = os.path.join(base_dir, 'smart_contract_vulnerabilities.html')
+        save_issues_to_html(headers, rows, output_path)
+        print(Fore.GREEN + f"Issues saved to {output_path}")
     else:
         print(Fore.GREEN + "No issues found")
 
