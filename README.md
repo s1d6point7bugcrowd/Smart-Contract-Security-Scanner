@@ -151,7 +151,6 @@ Issues found:
 | VulnerableContract |                        |  Uninitialized Variable        | Ensure all variables are properly initialized.                | critical   | Uninitialized variables can lead to unexpected behavior and security issues. Ensure all variables are properly initialized.                                |
 +--------------------+------------------------+--------------------------------+---------------------------------------------------------------+------------+------------------------------------------------------------------------------------------------------------------------------------------------------------+
                                                                        
-┌──(kali㉿kali)-[~]
-└─$ 
+Issues saved to /home/kali/smart_contract_vulnerabilities.html
 
 When prompted, enter the path to the Solidity contract file you want to test, e.g., /home/kali/redacted.sol
