@@ -72,9 +72,10 @@ def detect_issues(contract_path):
     # Detect various issues
     for contract in slither.contracts:
         for function in contract.functions:
+            function_checked_issues = set()
             for node in function.nodes:
                 if node.type == "HighLevelCall" and node.expression:
-                    if "from" in str(node.expression):
+                    if "from" in str(node.expression) and "Arbitrary 'from' Address" not in function_checked_issues:
                         add_issue(
                             "Arbitrary 'from' Address",
                             "Uses 'from' in a call, which may allow unauthorized transactions.",
@@ -82,7 +83,8 @@ def detect_issues(contract_path):
                             contract.name,
                             function.name
                         )
-                if function.visibility == "default":
+                        function_checked_issues.add("Arbitrary 'from' Address")
+                if function.visibility == "default" and "Default Visibility" not in function_checked_issues:
                     add_issue(
                         "Default Visibility",
                         "Has default visibility, making it accessible to anyone.",
@@ -90,7 +92,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.type == "HighLevelCall" and function.is_payable:
+                    function_checked_issues.add("Default Visibility")
+                if function.payable and any(n.type == "HighLevelCall" for n in function.nodes) and "Potential Reentrancy" not in function_checked_issues:
                     add_issue(
                         "Potential Reentrancy",
                         "Ensure proper reentrancy guards are in place.",
@@ -98,7 +101,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.type == "HighLevelCall" and node.expression and "delegatecall" in str(node.expression):
+                    function_checked_issues.add("Potential Reentrancy")
+                if node.type == "HighLevelCall" and node.expression and "delegatecall" in str(node.expression) and "Insecure Delegatecall" not in function_checked_issues:
                     add_issue(
                         "Insecure Delegatecall",
                         "Delegatecalls can lead to code execution in the context of the caller contract.",
@@ -106,7 +110,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.expression and "block.blockhash" in str(node.expression):
+                    function_checked_issues.add("Insecure Delegatecall")
+                if node.expression and "block.blockhash" in str(node.expression) and "Blockhash Dependence" not in function_checked_issues:
                     add_issue(
                         "Blockhash Dependence",
                         "This can be exploited to manipulate block hashes.",
@@ -114,7 +119,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.expression and ("block.timestamp" in str(node.expression) or "block.difficulty" in str(node.expression)):
+                    function_checked_issues.add("Blockhash Dependence")
+                if node.expression and ("block.timestamp" in str(node.expression) or "block.difficulty" in str(node.expression)) and "Insecure Randomness" not in function_checked_issues:
                     add_issue(
                         "Insecure Randomness",
                         "Avoid using block properties for randomness.",
@@ -122,7 +128,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.expression and "tx.origin" in str(node.expression):
+                    function_checked_issues.add("Insecure Randomness")
+                if node.expression and "tx.origin" in str(node.expression) and "Usage of tx.origin" not in function_checked_issues:
                     add_issue(
                         "Usage of tx.origin",
                         "This can be exploited in phishing attacks.",
@@ -130,15 +137,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.expression and ("call" in str(node.expression) or "delegatecall" in str(node.expression) or "send" in str(node.expression)):
-                    add_issue(
-                        "Low-Level Call",
-                        "Use higher-level functions for better safety and readability.",
-                        "critical",
-                        contract.name,
-                        function.name
-                    )
-                if node.type == "LowLevelCall" and not any(handler in str(node.expression) for handler in ["require", "assert", "revert"]):
+                    function_checked_issues.add("Usage of tx.origin")
+                if node.type == "LowLevelCall" and not any(handler in str(node.expression) for handler in ["require", "assert", "revert"]) and "Improper Exception Handling" not in function_checked_issues:
                     add_issue(
                         "Improper Exception Handling",
                         "Ensure proper exception handling mechanisms are in place.",
@@ -146,7 +146,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.expression and "block.timestamp" in str(node.expression):
+                    function_checked_issues.add("Improper Exception Handling")
+                if node.expression and "block.timestamp" in str(node.expression) and "Front-Running Vulnerability" not in function_checked_issues:
                     add_issue(
                         "Front-Running Vulnerability",
                         "Avoid using block timestamps for critical logic.",
@@ -154,7 +155,8 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
-                if node.type == "LowLevelCall" and not node.expression.contains("success"):
+                    function_checked_issues.add("Front-Running Vulnerability")
+                if node.type == "LowLevelCall" and not "success" in str(node.expression) and "Unchecked Low-Level Call" not in function_checked_issues:
                     add_issue(
                         "Unchecked Low-Level Call",
                         "Ensure the success of low-level calls is checked.",
@@ -162,8 +164,9 @@ def detect_issues(contract_path):
                         contract.name,
                         function.name
                     )
+                    function_checked_issues.add("Unchecked Low-Level Call")
 
-            if function.name == "withdraw" and function.visibility == "public":
+            if function.name == "withdraw" and function.visibility == "public" and "Unrestricted Ether Withdrawal" not in function_checked_issues:
                 add_issue(
                     "Unrestricted Ether Withdrawal",
                     "This can allow unauthorized withdrawals.",
@@ -171,7 +174,8 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
-            if len(function.nodes) > 20:
+                function_checked_issues.add("Unrestricted Ether Withdrawal")
+            if len(function.nodes) > 20 and "Gas Limit Issue" not in function_checked_issues:
                 add_issue(
                     "Gas Limit Issue",
                     "Optimize the function to reduce gas consumption.",
@@ -179,7 +183,8 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
-            if any(node.type == "HighLevelCall" for node in function.nodes):
+                function_checked_issues.add("Gas Limit Issue")
+            if any(node.type == "HighLevelCall" for node in function.nodes) and "External Function Call" not in function_checked_issues:
                 add_issue(
                     "External Function Call",
                     "Ensure external calls are safe and necessary.",
@@ -187,32 +192,36 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
+                function_checked_issues.add("External Function Call")
 
         for variable in contract.state_variables:
-            if variable.is_stored and variable.uninitialized:
+            if variable.is_stored and variable.uninitialized and "Uninitialized Storage Pointer" not in function_checked_issues:
                 add_issue(
                     "Uninitialized Storage Pointer",
                     "Can lead to unpredictable behavior.",
                     "critical",
                     contract.name
                 )
-            if variable.type == "address" and variable.value:
+                function_checked_issues.add("Uninitialized Storage Pointer")
+            if variable.type == "address" and variable.value and "Hardcoded Address" not in function_checked_issues:
                 add_issue(
                     "Hardcoded Address",
                     "Avoid using hardcoded addresses for better flexibility and security.",
                     "warning",
                     contract.name
                 )
-            if variable.uninitialized:
+                function_checked_issues.add("Hardcoded Address")
+            if variable.uninitialized and "Uninitialized Variable" not in function_checked_issues:
                 add_issue(
                     "Uninitialized Variable",
                     "Ensure all variables are properly initialized.",
                     "critical",
                     contract.name
                 )
+                function_checked_issues.add("Uninitialized Variable")
 
         for variable in function.variables:
-            if any(state_var.name == variable.name for state_var in contract.state_variables):
+            if any(state_var.name == variable.name for state_var in contract.state_variables) and "Shadowing Variable" not in function_checked_issues:
                 add_issue(
                     "Shadowing Variable",
                     "Avoid variable shadowing to prevent bugs.",
@@ -220,10 +229,11 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
+                function_checked_issues.add("Shadowing Variable")
 
         state_change = any(node.state_variables_written for node in function.nodes)
         emits_event = any(node.type == "EmitStatement" for node in function.nodes)
-        if state_change and not emits_event:
+        if state_change and not emits_event and "Missing Event Emission" not in function_checked_issues:
             add_issue(
                 "Missing Event Emission",
                 "Emit events for critical state changes.",
@@ -231,10 +241,11 @@ def detect_issues(contract_path):
                 contract.name,
                 function.name
             )
+            function_checked_issues.add("Missing Event Emission")
 
         deprecated_functions = ["suicide", "throw"]
         for node in function.nodes:
-            if node.expression and any(func in str(node.expression) for func in deprecated_functions):
+            if node.expression and any(func in str(node.expression) for func in deprecated_functions) and "Deprecated Function" not in function_checked_issues:
                 add_issue(
                     "Deprecated Function",
                     "Replace deprecated functions with their modern equivalents.",
@@ -242,9 +253,10 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
+                function_checked_issues.add("Deprecated Function")
 
         for modifier in function.modifiers:
-            if modifier == "onlyOwner" and not function.is_restricted:
+            if modifier == "onlyOwner" and not function.is_restricted and "Missing Function Modifier" not in function_checked_issues:
                 add_issue(
                     "Missing Function Modifier",
                     "Ensure critical functions have the necessary modifiers.",
@@ -252,9 +264,10 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
+                function_checked_issues.add("Missing Function Modifier")
 
         call_count = sum(1 for node in function.nodes if node.type == "HighLevelCall")
-        if call_count > 1:
+        if call_count > 1 and "Reentrancy with Multiple Calls" not in function_checked_issues:
             add_issue(
                 "Reentrancy with Multiple Calls",
                 "Ensure proper reentrancy guards are in place.",
@@ -262,9 +275,10 @@ def detect_issues(contract_path):
                 contract.name,
                 function.name
             )
+            function_checked_issues.add("Reentrancy with Multiple Calls")
 
         for function in contract.functions:
-            if any("ERC20" in var.type.__str__() for var in function.variables) and not any(check in function.name for check in ["require", "assert"]):
+            if any("ERC20" in var.type.__str__() for var in function.variables) and not any(check in function.name for check in ["require", "assert"]) and "Missing ERC20 Return Value Check" not in function_checked_issues:
                 add_issue(
                     "Missing ERC20 Return Value Check",
                     "Check the return value of ERC20 operations.",
@@ -272,6 +286,7 @@ def detect_issues(contract_path):
                     contract.name,
                     function.name
                 )
+                function_checked_issues.add("Missing ERC20 Return Value Check")
 
     return issues
 
