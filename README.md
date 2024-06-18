@@ -73,7 +73,7 @@ This project provides a Python script to analyze Solidity smart contracts for co
 
 ## Installation
 
-To use this script, you need to have Python installed along with the necessary libraries. Follow the instructions below to set up your environment.
+To use this script, you need to have Python installed along with the necessary libraries. Follow the instructions below to set up your environment. Place the python script in the root of the contracts (.sol) repo being tested.
 
 ### Prerequisites
 
