@@ -77,12 +77,48 @@ To use this script, you need to have Python installed along with the necessary l
 
 ### Prerequisites
 
-- Python 3.x
-- `pip` package manager
+Dependencies
+To run the Solidity Smart Contract Analyzer script, you need to install the following Python packages:
 
-### Install Required Libraries
+Python Packages
+solcx
+slither-analyzer
+colorama
+termcolor
+tabulate
+You can install these packages using pip:
 
-pip install web3 py-solc-x slither-analyzer colorama termcolor tabulate
+
+
+pip install solcx slither-analyzer colorama termcolor tabulate
+Additional Tools
+You also need to have solc (Solidity compiler) installed. solc is used by solcx to compile the Solidity contracts.
+
+Installing solc
+To install solc, you can use the following command:
+
+sudo apt install solc
+Installing solc-select
+solc-select is used to manage multiple versions of the Solidity compiler. You can install it using the following commands:
+
+
+# Clone the solc-select repository
+git clone https://github.com/crytic/solc-select.git
+
+# Navigate to the solc-select directory
+cd solc-select
+
+# Install solc-select
+sudo ./scripts/install.sh
+Usage Example
+After installing the dependencies, you can run the script by navigating to the directory where the script is located and executing:
+
+
+python3 SC-Scan.py
+Follow the prompts to analyze your Solidity contracts.
+
+
+
 
 
 
