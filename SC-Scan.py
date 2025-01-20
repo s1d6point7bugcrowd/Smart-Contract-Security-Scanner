@@ -227,13 +227,17 @@ def save_issues_to_html(headers, rows, output_path):
     with open(output_path, 'w') as file:
         file.write(html_content)
 
-# Function to generate Echidna configuration
+# Function to generate Echidna configuration with advanced settings
 def generate_echidna_config(contract_path, properties, config_path='echidna_config.yaml'):
     with open(config_path, 'w') as file:
         file.write(f"contract: {os.path.basename(contract_path)}\n")
         file.write("test-mode: assertion\n")
         file.write("verbosity: 3\n")
-        file.write("concurrency: 1\n")
+        file.write("concurrency: 2\n")  # Increase concurrency for faster fuzzing
+        file.write("max-test-time: 60\n")  # Set maximum time per test case (in seconds)
+        file.write("max-number-of-tests: 10000\n")  # Increase number of test cases
+        file.write("fuzzing-strategy: stateful\n")  # Enable stateful fuzzing
+        file.write("seed: 42\n")  # Set a seed for reproducibility
         file.write("properties:\n")
         for prop in properties:
             file.write(f"  - {prop}\n")
@@ -305,34 +309,9 @@ def parse_mythril_results(mythril_output):
         logging.error("Mythril output is not valid JSON.")
     return issues
 
-# Function to parse Echidna results and add to issues
-def add_echidna_issues(issues, echidna_issues):
+# Function to add Echidna issues to the issues dictionary
+def add_echidna_issues(issues, echidna_issues, contract_name):
     for issue in echidna_issues:
-        # Example parsing; adjust based on actual Echidna output format
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Failure"
-                severity = "high"
-                explanation = "Echidna detected a property violation during fuzzing. Review the contract's properties and ensure they are correctly implemented."
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                # Assuming the failure is related to the contract
-                contract = os.path.splitext(os.path.basename(args.contract))[0]
-                issues[contract].append((issue_message, "N/A", severity))
-    return issues
-
-# Function to parse Mythril results and add to issues
-def add_mythril_issues(issues, mythril_issues):
-    for issue in mythril_issues:
-        contract, function, issue_message, severity = issue
-        issues[contract].append((issue_message, function, severity))
-    return issues
-
-# Function to parse Echidna results and add to issues
-def add_echidna_issues(issues, echidna_issues):
-    for issue in echidna_issues:
-        # Example parsing; adjust based on actual Echidna output format
         if 'FAILURE:' in issue:
             parts = issue.split('FAILURE:')
             if len(parts) > 1:
@@ -344,46 +323,53 @@ def add_echidna_issues(issues, echidna_issues):
                     "Review the contract's properties and ensure they are correctly implemented."
                 )
                 issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                # Assuming the failure is related to the contract
-                contract = os.path.splitext(os.path.basename(args.contract))[0]
-                issues[contract].append((issue_message, "N/A", severity))
+                issues[contract_name].append((issue_message, "N/A", severity))
     return issues
 
-# Function to parse Mythril results and add to issues
+# Function to add Mythril issues to the issues dictionary
 def add_mythril_issues(issues, mythril_issues):
     for issue in mythril_issues:
         contract, function, issue_message, severity = issue
         issues[contract].append((issue_message, function, severity))
     return issues
 
-# Function to parse and add Mythril issues
-def process_mythril(issues, mythril_output):
-    mythril_issues = parse_mythril_results(mythril_output)
-    if mythril_issues:
-        print(Fore.YELLOW + "Symbolic Execution Issues Found:\n")
-        for issue in mythril_issues:
-            contract, function, issue_message, severity = issue
-            print(Fore.YELLOW + issue_message)
-            logging.warning(f"Mythril Issue in {contract}.{function}: {issue_message}")
-        issues = add_mythril_issues(issues, mythril_issues)
-    else:
-        print(Fore.GREEN + "No issues found during symbolic execution.")
-        logging.info("No issues found during symbolic execution.")
-    return issues
-
-# Function to parse and add Echidna issues
-def process_echidna(issues, echidna_output):
+# Function to process Echidna results
+def process_echidna(issues, echidna_output, contract_name):
     echidna_issues = parse_echidna_results(echidna_output)
     if echidna_issues:
-        print(Fore.YELLOW + "Dynamic Analysis Issues Found:\n")
+        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
         for issue in echidna_issues:
             print(Fore.YELLOW + issue)
             logging.warning(f"Echidna Issue: {issue}")
-        issues = add_echidna_issues(issues, echidna_issues)
+        issues = add_echidna_issues(issues, echidna_issues, contract_name)
     else:
-        print(Fore.GREEN + "No issues found during dynamic analysis.")
-        logging.info("No issues found during dynamic analysis.")
+        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
+        logging.info("No issues found during dynamic analysis (Echidna).")
     return issues
+
+# Function to process Mythril results
+def process_mythril(issues, mythril_output):
+    mythril_issues = parse_mythril_results(mythril_output)
+    if mythril_issues:
+        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
+        for issue in mythril_issues:
+            print(Fore.YELLOW + issue[2])  # issue_message
+            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
+        issues = add_mythril_issues(issues, mythril_issues)
+    else:
+        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
+        logging.info("No issues found during symbolic execution (Mythril).")
+    return issues
+
+# Function to parse command-line arguments
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
+    parser.add_argument("-c", "--contract", required=True, help="Path to the Solidity contract file")
+    parser.add_argument("-r", "--remappings", default="", help="Path to the remappings file")
+    parser.add_argument("-e", "--evm", required=True, choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use")
+    parser.add_argument("-a", "--additional", default="", help="Comma-separated additional contract files")
+    parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
+    return parser.parse_args()
 
 # Function to display issues in a table
 def display_issues(issues):
@@ -454,6 +440,58 @@ def save_issues_to_html(headers, rows, output_path):
     with open(output_path, 'w') as file:
         file.write(html_content)
 
+# Function to add Echidna issues to the issues dictionary
+def add_echidna_issues(issues, echidna_issues, contract_name):
+    for issue in echidna_issues:
+        if 'FAILURE:' in issue:
+            parts = issue.split('FAILURE:')
+            if len(parts) > 1:
+                description = parts[1].strip()
+                issue_type = "Echidna Property Failure"
+                severity = "high"
+                explanation = (
+                    "Echidna detected a property violation during fuzzing. "
+                    "Review the contract's properties and ensure they are correctly implemented."
+                )
+                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
+                issues[contract_name].append((issue_message, "N/A", severity))
+    return issues
+
+# Function to add Mythril issues to the issues dictionary
+def add_mythril_issues(issues, mythril_issues):
+    for issue in mythril_issues:
+        contract, function, issue_message, severity = issue
+        issues[contract].append((issue_message, function, severity))
+    return issues
+
+# Function to process Echidna results
+def process_echidna(issues, echidna_output, contract_name):
+    echidna_issues = parse_echidna_results(echidna_output)
+    if echidna_issues:
+        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
+        for issue in echidna_issues:
+            print(Fore.YELLOW + issue)
+            logging.warning(f"Echidna Issue: {issue}")
+        issues = add_echidna_issues(issues, echidna_issues, contract_name)
+    else:
+        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
+        logging.info("No issues found during dynamic analysis (Echidna).")
+    return issues
+
+# Function to process Mythril results
+def process_mythril(issues, mythril_output):
+    mythril_issues = parse_mythril_results(mythril_output)
+    if mythril_issues:
+        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
+        for issue in mythril_issues:
+            print(Fore.YELLOW + issue[2])  # issue_message
+            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
+        issues = add_mythril_issues(issues, mythril_issues)
+    else:
+        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
+        logging.info("No issues found during symbolic execution (Mythril).")
+    return issues
+
 # Function to parse command-line arguments
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
@@ -464,17 +502,135 @@ def parse_arguments():
     parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
     return parser.parse_args()
 
-# Function to generate Echidna configuration
-def generate_echidna_config(contract_path, properties, config_path='echidna_config.yaml'):
-    with open(config_path, 'w') as file:
-        file.write(f"contract: {os.path.basename(contract_path)}\n")
-        file.write("test-mode: assertion\n")
-        file.write("verbosity: 3\n")
-        file.write("concurrency: 1\n")
-        file.write("properties:\n")
-        for prop in properties:
-            file.write(f"  - {prop}\n")
-    return config_path
+# Function to display issues in a table
+def display_issues(issues):
+    headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
+    rows = []
+    for contract, contract_issues in issues.items():
+        for issue, function, severity in contract_issues:
+            issue_info = issue.split(": ", 1)
+            if len(issue_info) < 2:
+                continue  # Skip malformed entries
+            issue_type = issue_info[0].strip()
+            description_part = issue_info[1].split("\nExplanation: ")
+            if len(description_part) < 2:
+                description = description_part[0].strip()
+                explanation = "No detailed explanation available."
+            else:
+                description = description_part[0].strip()
+                explanation = description_part[1].strip()
+            color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
+            rows.append([
+                contract,
+                function,
+                colored(issue_type, color),
+                colored(description, color),
+                severity.capitalize(),
+                explanation
+            ])
+
+    print(tabulate(rows, headers, tablefmt="grid"))
+    return headers, rows
+
+# Function to save issues to an HTML file
+def save_issues_to_html(headers, rows, output_path):
+    # Enhanced styling with Bootstrap and interactive table using DataTables
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Smart Contract Vulnerabilities</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
+        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h2>Smart Contract Vulnerabilities</h2>
+            <table id="issuesTable" class="table table-striped">
+                <thead>
+                    <tr>
+                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
+                </tbody>
+            </table>
+        </div>
+        <script>
+            $(document).ready(function() {{
+                $('#issuesTable').DataTable();
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    with open(output_path, 'w') as file:
+        file.write(html_content)
+
+# Function to add Echidna issues to the issues dictionary
+def add_echidna_issues(issues, echidna_issues, contract_name):
+    for issue in echidna_issues:
+        if 'FAILURE:' in issue:
+            parts = issue.split('FAILURE:')
+            if len(parts) > 1:
+                description = parts[1].strip()
+                issue_type = "Echidna Property Failure"
+                severity = "high"
+                explanation = (
+                    "Echidna detected a property violation during fuzzing. "
+                    "Review the contract's properties and ensure they are correctly implemented."
+                )
+                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
+                issues[contract_name].append((issue_message, "N/A", severity))
+    return issues
+
+# Function to add Mythril issues to the issues dictionary
+def add_mythril_issues(issues, mythril_issues):
+    for issue in mythril_issues:
+        contract, function, issue_message, severity = issue
+        issues[contract].append((issue_message, function, severity))
+    return issues
+
+# Function to process Echidna results
+def process_echidna(issues, echidna_output, contract_name):
+    echidna_issues = parse_echidna_results(echidna_output)
+    if echidna_issues:
+        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
+        for issue in echidna_issues:
+            print(Fore.YELLOW + issue)
+            logging.warning(f"Echidna Issue: {issue}")
+        issues = add_echidna_issues(issues, echidna_issues, contract_name)
+    else:
+        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
+        logging.info("No issues found during dynamic analysis (Echidna).")
+    return issues
+
+# Function to process Mythril results
+def process_mythril(issues, mythril_output):
+    mythril_issues = parse_mythril_results(mythril_output)
+    if mythril_issues:
+        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
+        for issue in mythril_issues:
+            print(Fore.YELLOW + issue[2])  # issue_message
+            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
+        issues = add_mythril_issues(issues, mythril_issues)
+    else:
+        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
+        logging.info("No issues found during symbolic execution (Mythril).")
+    return issues
+
+# Function to parse Echidna results
+def parse_echidna_results(echidna_output):
+    issues = []
+    lines = echidna_output.split('\n')
+    for line in lines:
+        if 'FAILURE:' in line or 'ERROR:' in line:
+            issues.append(line.strip())
+    return issues
 
 # Function to run Echidna fuzzing
 def run_echidna(contract_path, config_path):
@@ -495,14 +651,21 @@ def run_echidna(contract_path, config_path):
         logging.error(f"Echidna error: {e.stderr}")
         return e.stdout + e.stderr
 
-# Function to parse Echidna results
-def parse_echidna_results(echidna_output):
-    issues = []
-    lines = echidna_output.split('\n')
-    for line in lines:
-        if 'FAILURE:' in line or 'ERROR:' in line:
-            issues.append(line.strip())
-    return issues
+# Function to generate Echidna configuration with advanced settings
+def generate_echidna_config(contract_path, properties, config_path='echidna_config.yaml'):
+    with open(config_path, 'w') as file:
+        file.write(f"contract: {os.path.basename(contract_path)}\n")
+        file.write("test-mode: assertion\n")
+        file.write("verbosity: 3\n")
+        file.write("concurrency: 2\n")  # Increase concurrency for faster fuzzing
+        file.write("max-test-time: 60\n")  # Set maximum time per test case (in seconds)
+        file.write("max-number-of-tests: 10000\n")  # Increase number of test cases
+        file.write("fuzzing-strategy: stateful\n")  # Enable stateful fuzzing
+        file.write("seed: 42\n")  # Set a seed for reproducibility
+        file.write("properties:\n")
+        for prop in properties:
+            file.write(f"  - {prop}\n")
+    return config_path
 
 # Function to run Mythril symbolic execution
 def run_mythril(contract_path):
@@ -543,7 +706,7 @@ def parse_mythril_results(mythril_output):
     return issues
 
 # Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues):
+def add_echidna_issues(issues, echidna_issues, contract_name):
     for issue in echidna_issues:
         if 'FAILURE:' in issue:
             parts = issue.split('FAILURE:')
@@ -556,9 +719,7 @@ def add_echidna_issues(issues, echidna_issues):
                     "Review the contract's properties and ensure they are correctly implemented."
                 )
                 issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                # Assuming the failure is related to the contract
-                contract = os.path.splitext(os.path.basename(args.contract))[0]
-                issues[contract].append((issue_message, "N/A", severity))
+                issues[contract_name].append((issue_message, "N/A", severity))
     return issues
 
 # Function to add Mythril issues to the issues dictionary
@@ -568,24 +729,112 @@ def add_mythril_issues(issues, mythril_issues):
         issues[contract].append((issue_message, function, severity))
     return issues
 
-# Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues):
-    for issue in echidna_issues:
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Property Failure"
-                severity = "high"
-                explanation = (
-                    "Echidna detected a property violation during fuzzing. "
-                    "Review the contract's properties and ensure they are correctly implemented."
-                )
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                # Assuming the failure is related to the contract
-                contract = os.path.splitext(os.path.basename(args.contract))[0]
-                issues[contract].append((issue_message, "N/A", severity))
+# Function to process Echidna results
+def process_echidna(issues, echidna_output, contract_name):
+    echidna_issues = parse_echidna_results(echidna_output)
+    if echidna_issues:
+        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
+        for issue in echidna_issues:
+            print(Fore.YELLOW + issue)
+            logging.warning(f"Echidna Issue: {issue}")
+        issues = add_echidna_issues(issues, echidna_issues, contract_name)
+    else:
+        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
+        logging.info("No issues found during dynamic analysis (Echidna).")
     return issues
+
+# Function to process Mythril results
+def process_mythril(issues, mythril_output):
+    mythril_issues = parse_mythril_results(mythril_output)
+    if mythril_issues:
+        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
+        for issue in mythril_issues:
+            print(Fore.YELLOW + issue[2])  # issue_message
+            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
+        issues = add_mythril_issues(issues, mythril_issues)
+    else:
+        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
+        logging.info("No issues found during symbolic execution (Mythril).")
+    return issues
+
+# Function to parse command-line arguments
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
+    parser.add_argument("-c", "--contract", required=True, help="Path to the Solidity contract file")
+    parser.add_argument("-r", "--remappings", default="", help="Path to the remappings file")
+    parser.add_argument("-e", "--evm", required=True, choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use")
+    parser.add_argument("-a", "--additional", default="", help="Comma-separated additional contract files")
+    parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
+    return parser.parse_args()
+
+# Function to display issues in a table
+def display_issues(issues):
+    headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
+    rows = []
+    for contract, contract_issues in issues.items():
+        for issue, function, severity in contract_issues:
+            issue_info = issue.split(": ", 1)
+            if len(issue_info) < 2:
+                continue  # Skip malformed entries
+            issue_type = issue_info[0].strip()
+            description_part = issue_info[1].split("\nExplanation: ")
+            if len(description_part) < 2:
+                description = description_part[0].strip()
+                explanation = "No detailed explanation available."
+            else:
+                description = description_part[0].strip()
+                explanation = description_part[1].strip()
+            color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
+            rows.append([
+                contract,
+                function,
+                colored(issue_type, color),
+                colored(description, color),
+                severity.capitalize(),
+                explanation
+            ])
+
+    print(tabulate(rows, headers, tablefmt="grid"))
+    return headers, rows
+
+# Function to save issues to an HTML file
+def save_issues_to_html(headers, rows, output_path):
+    # Enhanced styling with Bootstrap and interactive table using DataTables
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Smart Contract Vulnerabilities</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
+        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h2>Smart Contract Vulnerabilities</h2>
+            <table id="issuesTable" class="table table-striped">
+                <thead>
+                    <tr>
+                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
+                </tbody>
+            </table>
+        </div>
+        <script>
+            $(document).ready(function() {{
+                $('#issuesTable').DataTable();
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    with open(output_path, 'w') as file:
+        file.write(html_content)
 
 # Main function to run the script
 def main():
@@ -665,7 +914,12 @@ def main():
     try:
         # Define properties for Echidna based on contract's functions or predefined rules
         # For demonstration, assume properties are predefined
-        properties = ["ownerShouldNeverBeZero", "onlyOwnerCanWithdraw"]
+        properties = [
+            "ownerShouldNeverBeZero",
+            "onlyOwnerCanWithdraw",
+            "totalSupplyNeverOverflows",
+            "noUnexpectedSelfDestruct"
+        ]
         config_path = generate_echidna_config(contract_path, properties)
 
         print(Fore.CYAN + "Running Echidna fuzzing for dynamic analysis...")
@@ -673,7 +927,10 @@ def main():
         logging.info("Echidna fuzzing completed.")
         print(Fore.GREEN + "Echidna fuzzing completed.")
 
-        issues = process_echidna(issues, echidna_output)
+        # Extract the contract name without extension for reporting
+        contract_name = os.path.splitext(os.path.basename(contract_path))[0]
+
+        issues = process_echidna(issues, echidna_output, contract_name)
 
     except Exception as e:
         print(Fore.RED + f"Error during dynamic analysis: {str(e)}")
@@ -692,13 +949,13 @@ def main():
 
     # Display issues in console
     if issues:
-        print(Fore.YELLOW + "Issues found:\n")
+        print(Fore.YELLOW + "\n=== Vulnerabilities Detected ===\n")
         headers, rows = display_issues(issues)
         save_issues_to_html(headers, rows, output_path)
-        print(Fore.GREEN + f"Issues saved to {output_path}")
+        print(Fore.GREEN + f"\nIssues saved to {output_path}")
         logging.info(f"Issues saved to {output_path}")
     else:
-        print(Fore.GREEN + "No issues found")
+        print(Fore.GREEN + "\nNo issues found.")
         logging.info("No issues found.")
 
 if __name__ == "__main__":
