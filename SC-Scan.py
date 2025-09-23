@@ -312,7 +312,7 @@ def main():
             save_issues_to_html(headers, rows, args.output)
             print(Fore.GREEN + f"\nFull report saved to {args.output}")
         else:
-            print(Fore.GREEN + "\n\n✅ No vulnerabilities found by any tool.")
+            print(Fore.GREEN + "\n\n No vulnerabilities found by any tool.")
             logging.info("Analysis complete. No issues found.")
 
     except Exception as e:
