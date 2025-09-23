@@ -1,962 +1,323 @@
 import os
 import re
 import urllib.error
-from collections import defaultdict
-from solcx import compile_standard, install_solc, set_solc_version, get_installed_solc_versions
-from slither.slither import Slither
-from colorama import Fore, Style, init
-from termcolor import colored
-from tabulate import tabulate
-import html
 import argparse
 import logging
 import subprocess
 import json
+import html
+from collections import defaultdict
+from solcx import compile_standard, install_solc_version_pragma, set_solc_version_pragma
+from slither.slither import Slither
+from colorama import Fore, init
+from termcolor import colored
+from tabulate import tabulate
 
-# Initialize colorama
+# Initialize colorama for colored console output
 init(autoreset=True)
 
-# Configure logging
+# Configure logging to a file
 logging.basicConfig(filename='vulnerability_analyzer.log',
                     filemode='a',
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
-# List of supported EVM versions
+# A list of supported EVM versions for command-line argument validation
 SUPPORTED_EVM_VERSIONS = [
-    "homestead", "tangerineWhistle", "spuriousDragon",
-    "byzantium", "constantinople", "petersburg", "istanbul",
-    "berlin", "london", "paris", "shanghai", "cancun", "prague"
+    "homestead", "tangerineWhistle", "spuriousDragon", "byzantium",
+    "constantinople", "petersburg", "istanbul", "berlin", "london",
+    "paris", "shanghai", "cancun", "prague"
 ]
 
-# Function to extract the Solidity compiler version from the contract
+## --- Helper Functions ---
+
 def extract_solidity_version(contract_path):
+    """Extracts the solidity version pragma from a contract file."""
     with open(contract_path, 'r') as file:
         content = file.read()
         match = re.search(r'pragma solidity\s+([^;]+);', content)
         if match:
             return match.group(1).strip()
-        else:
-            raise ValueError("Solidity version pragma not found in the contract.")
+        raise ValueError("Solidity version pragma not found in the contract.")
 
-# Function to compile the Solidity contract
-def compile_contract(contract_path, solc_version, evm_version):
-    set_solc_version(solc_version)
-    with open(contract_path, 'r') as file:
-        contract_source = file.read()
-
-    compiled_sol = compile_standard({
-        "language": "Solidity",
-        "sources": {
-            os.path.basename(contract_path): {
-                "content": contract_source
-            }
-        },
-        "settings": {
-            "outputSelection": {
-                "*": {
-                    "*": ["abi", "metadata", "evm.bytecode", "evm.sourceMap"]
-                }
-            },
-            "evmVersion": evm_version
-        }
-    }, allow_paths="./")  # Adjust allow_paths as necessary
-
-    return compiled_sol
-
-# Function to detect custom issues
-def detect_custom_issues(slither, issues):
-    for contract in slither.contracts:
-        for function in contract.functions:
-            # Define critical functions that require access control
-            critical_functions = ["withdraw", "transferOwnership", "selfDestructContract", "changeOwner"]
-            if function.name in critical_functions:
-                has_modifier = any(modifier.name == "onlyOwner" for modifier in function.modifiers)
-                if not has_modifier:
-                    issue_type = "Missing Access Control"
-                    description = f"The function '{function.name}' lacks access control modifiers, allowing unrestricted access."
-                    severity = "high"
-                    explanation = (
-                        f"The function '{function.name}' performs critical operations without restricting access. "
-                        "This can be exploited by malicious actors to manipulate the contract's state or drain funds."
-                    )
-                    issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                    issues[contract.name].append((issue_message, function.name, severity))
-    return issues
-
-# Function to detect issues using Slither
-def detect_issues(contract_path, solc_version, evm_version):
-    try:
-        slither = Slither(contract_path, solc_args=["--evm-version", evm_version])
-
-        issues = defaultdict(list)
-
-        # Utilize Slither's built-in detectors
-        for detector in slither.detectors:
-            for result in detector.execute():
-                contract = result.contract_name
-                function = result.function_name if result.function_name else ""
-                issue_type = detector.NAME
-                description = result.description
-                severity = result.severity.name.lower()
-
-                explanation = get_explanation(issue_type)
-
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                issues[contract].append((issue_message, function, severity))
-
-        # Apply custom vulnerability checks
-        issues = detect_custom_issues(slither, issues)
-
-        return issues
-
-    except Exception as e:
-        raise Exception(f"Error detecting issues: {str(e)}")
-
-# Function to get explanations for each issue type
 def get_explanation(issue_type):
+    """Provides detailed explanations for common vulnerability types."""
     explanations = {
-        "Reentrancy": (
-            "Reentrancy vulnerabilities allow attackers to repeatedly call a function before the previous invocation completes. "
-            "This can lead to multiple withdrawals or unauthorized state changes, potentially draining contract funds."
-        ),
-        "UnusedReturn": (
-            "Ignoring the return value of a function can lead to unexpected behaviors. For instance, failing to check "
-            "the return value of an external call might allow the contract to proceed under the false assumption that the call was successful."
-        ),
-        "Timestamp": (
-            "Using block timestamps (`block.timestamp`) for critical logic can be manipulated by miners, allowing them to influence the outcome of time-dependent functions."
-        ),
-        "Delegatecall": (
-            "Using `delegatecall` executes code in the context of the caller's storage. If not handled carefully, it can lead to code injection and unauthorized state changes, compromising contract integrity."
-        ),
-        "Arithmetic Overflow": (
-            "Arithmetic overflows occur when operations exceed the maximum value of a data type, causing unexpected behavior. For example, adding 1 to the maximum `uint256` value wraps around to zero."
-        ),
-        "Arithmetic Underflow": (
-            "Arithmetic underflows happen when operations result in values below the minimum limit of a data type, leading to incorrect calculations. For instance, subtracting 1 from zero in an unsigned integer wraps around to the maximum value."
-        ),
-        "Hardcoded Address": (
-            "Using hardcoded addresses reduces flexibility and can introduce security risks. If the hardcoded address is compromised or needs to change, updating the contract becomes cumbersome and error-prone."
-        ),
-        "Missing Event Emission": (
-            "Events are crucial for logging significant state changes, facilitating off-chain monitoring and debugging. Missing event emissions can hinder transparency and make it difficult to track contract activities."
-        ),
-        "Unchecked Low-Level Call": (
-            "Low-level calls like `call`, `delegatecall`, and `send` are error-prone. Failing to check their return values can result in undetected failures, leading to inconsistent contract states or loss of funds."
-        ),
-        "Self Destruct": (
-            "Using `selfdestruct` can permanently remove a contract from the blockchain, leading to loss of contract state and functionality. It should be used cautiously, ensuring only authorized entities can trigger it."
-        ),
-        "Missing Access Control": (
-            "Functions performing critical operations without proper access control can be exploited by unauthorized users to manipulate the contract's state or drain funds."
-        ),
-        "Arithmetic Overflow and Underflow": (
-            "Arithmetic operations without proper checks can lead to overflows or underflows, resulting in unexpected behavior and potential vulnerabilities."
-        ),
-        # Add more detailed explanations for other issue types as needed
+        "Reentrancy": "Reentrancy allows attackers to repeatedly call a function before the previous invocation completes, which can lead to unauthorized state changes or draining funds.",
+        "UnusedReturn": "Ignoring a function's return value can lead to unexpected behavior, as the contract may proceed assuming a call was successful when it failed.",
+        "Timestamp": "Using `block.timestamp` for critical logic can be manipulated by miners, allowing them to influence the outcome of time-dependent functions.",
+        "Delegatecall": "Careless use of `delegatecall` can lead to code injection and unauthorized state changes, as it executes external code in the caller's context.",
+        "Arithmetic Overflow": "When an arithmetic operation exceeds the maximum value for a data type (e.g., uint256), it wraps around to zero, causing unexpected calculations.",
+        "Arithmetic Underflow": "When an operation results in a value below the minimum for a data type, it wraps around to the maximum value, leading to incorrect logic.",
+        "Missing Access Control": "Functions performing critical operations without proper access control can be exploited by unauthorized users to manipulate the contract's state or drain funds.",
+        # Add more explanations as needed
     }
     return explanations.get(issue_type, "No detailed explanation available for this issue.")
 
-# Function to display issues in a table
-def display_issues(issues):
-    headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
-    rows = []
-    for contract, contract_issues in issues.items():
-        for issue, function, severity in contract_issues:
-            issue_info = issue.split(": ", 1)
-            if len(issue_info) < 2:
-                continue  # Skip malformed entries
-            issue_type = issue_info[0].strip()
-            description_part = issue_info[1].split("\nExplanation: ")
-            if len(description_part) < 2:
-                description = description_part[0].strip()
-                explanation = "No detailed explanation available."
-            else:
-                description = description_part[0].strip()
-                explanation = description_part[1].strip()
-            color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
-            rows.append([
-                contract,
-                function,
-                colored(issue_type, color),
-                colored(description, color),
-                severity.capitalize(),
-                explanation
-            ])
 
-    print(tabulate(rows, headers, tablefmt="grid"))
-    return headers, rows
+## --- Static Analysis (Slither) ---
 
-# Function to save issues to an HTML file
-def save_issues_to_html(headers, rows, output_path):
-    # Enhanced styling with Bootstrap and interactive table using DataTables
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Smart Contract Vulnerabilities</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
-        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
-    </head>
-    <body>
-        <div class="container mt-5">
-            <h2>Smart Contract Vulnerabilities</h2>
-            <table id="issuesTable" class="table table-striped">
-                <thead>
-                    <tr>
-                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
-                </tbody>
-            </table>
-        </div>
-        <script>
-            $(document).ready(function() {{
-                $('#issuesTable').DataTable();
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    with open(output_path, 'w') as file:
-        file.write(html_content)
-
-# Function to generate Echidna configuration with advanced settings
-def generate_echidna_config(contract_path, properties, config_path='echidna_config.yaml'):
-    with open(config_path, 'w') as file:
-        file.write(f"contract: {os.path.basename(contract_path)}\n")
-        file.write("test-mode: assertion\n")
-        file.write("verbosity: 3\n")
-        file.write("concurrency: 2\n")  # Increase concurrency for faster fuzzing
-        file.write("max-test-time: 60\n")  # Set maximum time per test case (in seconds)
-        file.write("max-number-of-tests: 10000\n")  # Increase number of test cases
-        file.write("fuzzing-strategy: stateful\n")  # Enable stateful fuzzing
-        file.write("seed: 42\n")  # Set a seed for reproducibility
-        file.write("properties:\n")
-        for prop in properties:
-            file.write(f"  - {prop}\n")
-    return config_path
-
-# Function to run Echidna fuzzing
-def run_echidna(contract_path, config_path):
-    try:
-        # Using Docker to run Echidna
-        cmd = [
-            'docker', 'run', '--rm',
-            '-v', f"{os.path.abspath(contract_path)}:/contracts/{os.path.basename(contract_path)}",
-            '-v', f"{os.path.abspath(config_path)}:/config/echidna_config.yaml",
-            'ghcr.io/crytic/echidna:latest',
-            '/bin/sh', '-c',
-            f"echidna-test /contracts/{os.path.basename(contract_path)} --config-file /config/{os.path.basename(config_path)}"
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(Fore.RED + "Echidna fuzzing failed.")
-        logging.error(f"Echidna error: {e.stderr}")
-        return e.stdout + e.stderr
-
-# Function to parse Echidna results
-def parse_echidna_results(echidna_output):
-    issues = []
-    lines = echidna_output.split('\n')
-    for line in lines:
-        if 'FAILURE:' in line or 'ERROR:' in line:
-            issues.append(line.strip())
+def detect_custom_issues(slither, issues):
+    """Detects custom, user-defined issues like missing access control."""
+    critical_functions = ["withdraw", "transferOwnership", "selfDestructContract", "changeOwner"]
+    for contract in slither.contracts:
+        for function in contract.functions:
+            if function.name in critical_functions:
+                has_only_owner = any(modifier.name == "onlyOwner" for modifier in function.modifiers)
+                if not has_only_owner:
+                    issue = {
+                        "type": "Missing Access Control",
+                        "description": f"The function '{function.name}' lacks access control, allowing unrestricted access.",
+                        "explanation": get_explanation("Missing Access Control"),
+                        "function": function.name,
+                        "severity": "high"
+                    }
+                    issues[contract.name].append(issue)
     return issues
 
-# Function to run Mythril symbolic execution
-def run_mythril(contract_path):
+def run_slither_analysis(contract_path, evm_version):
+    """Runs Slither to perform static analysis and aggregates findings."""
+    try:
+        slither = Slither(contract_path, solc_args=[f"--evm-version {evm_version}"])
+        issues = defaultdict(list)
+
+        # Process Slither's built-in detectors
+        for detector_class in slither.detectors_classes:
+            detector = detector_class(slither)
+            results = detector.detect()
+            for result in results:
+                issue = {
+                    "type": result['check'],
+                    "description": result['description'],
+                    "explanation": get_explanation(result['check']),
+                    "function": result['elements'][0].name if result['elements'] else "N/A",
+                    "severity": result['impact'].lower()
+                }
+                issues[result['elements'][0].contract.name].append(issue)
+
+        # Add custom checks
+        issues = detect_custom_issues(slither, issues)
+        return issues
+    except Exception as e:
+        raise Exception(f"Error running Slither analysis: {e}")
+
+
+## --- Dynamic Analysis (Echidna) ---
+
+def generate_echidna_config(contract_path, config_path='echidna_config.yaml'):
+    """Generates an advanced Echidna configuration file for fuzzing."""
+    with open(config_path, 'w') as f:
+        f.write(f"contract: {os.path.basename(contract_path)}\n")
+        f.write("testMode: property\n")
+        f.write("testLimit: 10000\n") # Number of test cases
+        f.write("workerLimit: 4\n")  # Concurrency
+        f.write("corpusDir: 'echidna_corpus'\n")
+    return config_path
+
+def run_echidna(contract_path, config_path):
+    """Runs Echidna fuzzing tool within a Docker container."""
     try:
         cmd = [
-            'myth', 'analyze',
-            contract_path,
-            '--solv', 'auto',
-            '--json',
-            '--verbosity', '0'
+            'docker', 'run', '--rm',
+            '-v', f"{os.path.abspath(os.path.dirname(contract_path))}:/src",
+            'trailofbits/echidna',
+            'echidna', f"/src/{os.path.basename(contract_path)}",
+            '--config', f"/src/{os.path.basename(config_path)}"
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(Fore.RED + "Mythril analysis failed.")
+        logging.error(f"Echidna error: {e.stderr}")
+        return e.stdout + e.stderr # Return output even on failure
+
+def process_echidna_results(issues, echidna_output, contract_name):
+    """Parses Echidna's output and adds any found issues."""
+    echidna_failures = [line for line in echidna_output.split('\n') if 'failed!' in line]
+    if not echidna_failures:
+        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
+        return issues
+    
+    print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
+    for failure in echidna_failures:
+        print(Fore.YELLOW + failure)
+        logging.warning(f"Echidna Issue: {failure}")
+        issue = {
+            "type": "Echidna Property Failure",
+            "description": failure.strip(),
+            "explanation": "Echidna detected a property violation during fuzzing.",
+            "function": "N/A",
+            "severity": "high"
+        }
+        issues[contract_name].append(issue)
+    return issues
+
+
+## --- Symbolic Execution (Mythril) ---
+
+def run_mythril(contract_path):
+    """Runs Mythril symbolic execution tool."""
+    try:
+        cmd = ['myth', 'analyze', contract_path, '--solv', 'auto', '-o', 'json']
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
         logging.error(f"Mythril error: {e.stderr}")
         return e.stdout + e.stderr
 
-# Function to parse Mythril results
-def parse_mythril_results(mythril_output):
-    issues = []
+def process_mythril_results(issues, mythril_output):
+    """Parses Mythril's JSON output and adds any found issues."""
     try:
         results = json.loads(mythril_output)
-        for issue in results.get('issues', []):
-            contract = issue.get('contract')
-            function = issue.get('function', '')
-            issue_type = issue.get('title')
-            description = issue.get('description')
-            severity = issue.get('severity').lower()  # 'high', 'medium', 'low'
-
-            explanation = get_explanation(issue_type)
-
-            issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-            issues.append((contract, function, issue_message, severity))
     except json.JSONDecodeError:
         print(Fore.RED + "Failed to parse Mythril output.")
         logging.error("Mythril output is not valid JSON.")
-    return issues
+        return issues
 
-# Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues, contract_name):
-    for issue in echidna_issues:
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Property Failure"
-                severity = "high"
-                explanation = (
-                    "Echidna detected a property violation during fuzzing. "
-                    "Review the contract's properties and ensure they are correctly implemented."
-                )
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                issues[contract_name].append((issue_message, "N/A", severity))
-    return issues
-
-# Function to add Mythril issues to the issues dictionary
-def add_mythril_issues(issues, mythril_issues):
-    for issue in mythril_issues:
-        contract, function, issue_message, severity = issue
-        issues[contract].append((issue_message, function, severity))
-    return issues
-
-# Function to process Echidna results
-def process_echidna(issues, echidna_output, contract_name):
-    echidna_issues = parse_echidna_results(echidna_output)
-    if echidna_issues:
-        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
-        for issue in echidna_issues:
-            print(Fore.YELLOW + issue)
-            logging.warning(f"Echidna Issue: {issue}")
-        issues = add_echidna_issues(issues, echidna_issues, contract_name)
-    else:
-        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
-        logging.info("No issues found during dynamic analysis (Echidna).")
-    return issues
-
-# Function to process Mythril results
-def process_mythril(issues, mythril_output):
-    mythril_issues = parse_mythril_results(mythril_output)
-    if mythril_issues:
-        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
-        for issue in mythril_issues:
-            print(Fore.YELLOW + issue[2])  # issue_message
-            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
-        issues = add_mythril_issues(issues, mythril_issues)
-    else:
+    if not results.get('issues'):
         print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
-        logging.info("No issues found during symbolic execution (Mythril).")
+        return issues
+
+    print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
+    for result in results['issues']:
+        print(Fore.YELLOW + result['title'])
+        logging.warning(f"Mythril Issue: {result['title']}")
+        issue = {
+            "type": result['title'],
+            "description": result['description'],
+            "explanation": get_explanation(result['title']),
+            "function": result.get('function', 'N/A'),
+            "severity": result['type'].lower()
+        }
+        # Avoid duplicating issues if Mythril reports for multiple contracts
+        contract_name = os.path.basename(result.get('filename', 'UnknownContract'))
+        issues[contract_name].append(issue)
     return issues
 
-# Function to parse command-line arguments
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
-    parser.add_argument("-c", "--contract", required=True, help="Path to the Solidity contract file")
-    parser.add_argument("-r", "--remappings", default="", help="Path to the remappings file")
-    parser.add_argument("-e", "--evm", required=True, choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use")
-    parser.add_argument("-a", "--additional", default="", help="Comma-separated additional contract files")
-    parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
-    return parser.parse_args()
 
-# Function to display issues in a table
+## --- Reporting ---
+
 def display_issues(issues):
+    """Displays all detected vulnerabilities in a formatted table in the console."""
     headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
     rows = []
     for contract, contract_issues in issues.items():
-        for issue, function, severity in contract_issues:
-            issue_info = issue.split(": ", 1)
-            if len(issue_info) < 2:
-                continue  # Skip malformed entries
-            issue_type = issue_info[0].strip()
-            description_part = issue_info[1].split("\nExplanation: ")
-            if len(description_part) < 2:
-                description = description_part[0].strip()
-                explanation = "No detailed explanation available."
-            else:
-                description = description_part[0].strip()
-                explanation = description_part[1].strip()
+        for issue in contract_issues:
+            severity = issue['severity']
             color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
             rows.append([
                 contract,
-                function,
-                colored(issue_type, color),
-                colored(description, color),
+                issue['function'],
+                colored(issue['type'], color),
+                colored(issue['description'], color, attrs=['bold']),
                 severity.capitalize(),
-                explanation
+                issue['explanation']
             ])
-
     print(tabulate(rows, headers, tablefmt="grid"))
     return headers, rows
 
-# Function to save issues to an HTML file
 def save_issues_to_html(headers, rows, output_path):
-    # Enhanced styling with Bootstrap and interactive table using DataTables
+    """Saves the vulnerability report to an interactive HTML file."""
+    # Sanitize rows for HTML output, removing ANSI color codes
+    clean_rows = []
+    for row in rows:
+        clean_row = [re.sub(r'\x1b\[[0-9;]*m', '', str(cell)) for cell in row]
+        clean_rows.append(clean_row)
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Smart Contract Vulnerabilities</title>
+        <title>Smart Contract Vulnerability Report</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
         <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
-        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+        <style>body {{ font-family: Arial, sans-serif; }} .container {{ margin-top: 2rem; }}</style>
     </head>
     <body>
-        <div class="container mt-5">
-            <h2>Smart Contract Vulnerabilities</h2>
-            <table id="issuesTable" class="table table-striped">
+        <div class="container">
+            <h2 class="mb-4">Smart Contract Vulnerability Report</h2>
+            <table id="issuesTable" class="table table-striped table-bordered" style="width:100%">
                 <thead>
-                    <tr>
-                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
-                    </tr>
+                    <tr>{''.join(f'<th>{html.escape(header)}</th>' for header in headers)}</tr>
                 </thead>
                 <tbody>
-                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
+                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in clean_rows)}
                 </tbody>
             </table>
         </div>
-        <script>
-            $(document).ready(function() {{
-                $('#issuesTable').DataTable();
-            }});
-        </script>
+        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+        <script>$(document).ready(function() {{ $('#issuesTable').DataTable(); }});</script>
     </body>
     </html>
     """
     with open(output_path, 'w') as file:
         file.write(html_content)
+    logging.info(f"Report saved to {output_path}")
 
-# Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues, contract_name):
-    for issue in echidna_issues:
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Property Failure"
-                severity = "high"
-                explanation = (
-                    "Echidna detected a property violation during fuzzing. "
-                    "Review the contract's properties and ensure they are correctly implemented."
-                )
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                issues[contract_name].append((issue_message, "N/A", severity))
-    return issues
 
-# Function to add Mythril issues to the issues dictionary
-def add_mythril_issues(issues, mythril_issues):
-    for issue in mythril_issues:
-        contract, function, issue_message, severity = issue
-        issues[contract].append((issue_message, function, severity))
-    return issues
+## --- Main Execution ---
 
-# Function to process Echidna results
-def process_echidna(issues, echidna_output, contract_name):
-    echidna_issues = parse_echidna_results(echidna_output)
-    if echidna_issues:
-        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
-        for issue in echidna_issues:
-            print(Fore.YELLOW + issue)
-            logging.warning(f"Echidna Issue: {issue}")
-        issues = add_echidna_issues(issues, echidna_issues, contract_name)
-    else:
-        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
-        logging.info("No issues found during dynamic analysis (Echidna).")
-    return issues
-
-# Function to process Mythril results
-def process_mythril(issues, mythril_output):
-    mythril_issues = parse_mythril_results(mythril_output)
-    if mythril_issues:
-        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
-        for issue in mythril_issues:
-            print(Fore.YELLOW + issue[2])  # issue_message
-            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
-        issues = add_mythril_issues(issues, mythril_issues)
-    else:
-        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
-        logging.info("No issues found during symbolic execution (Mythril).")
-    return issues
-
-# Function to parse command-line arguments
 def parse_arguments():
+    """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
-    parser.add_argument("-c", "--contract", required=True, help="Path to the Solidity contract file")
-    parser.add_argument("-r", "--remappings", default="", help="Path to the remappings file")
-    parser.add_argument("-e", "--evm", required=True, choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use")
-    parser.add_argument("-a", "--additional", default="", help="Comma-separated additional contract files")
-    parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
+    parser.add_argument("contract", help="Path to the Solidity contract file")
+    parser.add_argument("--evm", default="london", choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use for analysis")
+    parser.add_argument("-o", "--output", default="vulnerability_report.html", help="Output HTML report path")
     return parser.parse_args()
 
-# Function to display issues in a table
-def display_issues(issues):
-    headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
-    rows = []
-    for contract, contract_issues in issues.items():
-        for issue, function, severity in contract_issues:
-            issue_info = issue.split(": ", 1)
-            if len(issue_info) < 2:
-                continue  # Skip malformed entries
-            issue_type = issue_info[0].strip()
-            description_part = issue_info[1].split("\nExplanation: ")
-            if len(description_part) < 2:
-                description = description_part[0].strip()
-                explanation = "No detailed explanation available."
-            else:
-                description = description_part[0].strip()
-                explanation = description_part[1].strip()
-            color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
-            rows.append([
-                contract,
-                function,
-                colored(issue_type, color),
-                colored(description, color),
-                severity.capitalize(),
-                explanation
-            ])
-
-    print(tabulate(rows, headers, tablefmt="grid"))
-    return headers, rows
-
-# Function to save issues to an HTML file
-def save_issues_to_html(headers, rows, output_path):
-    # Enhanced styling with Bootstrap and interactive table using DataTables
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Smart Contract Vulnerabilities</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
-        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
-    </head>
-    <body>
-        <div class="container mt-5">
-            <h2>Smart Contract Vulnerabilities</h2>
-            <table id="issuesTable" class="table table-striped">
-                <thead>
-                    <tr>
-                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
-                </tbody>
-            </table>
-        </div>
-        <script>
-            $(document).ready(function() {{
-                $('#issuesTable').DataTable();
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    with open(output_path, 'w') as file:
-        file.write(html_content)
-
-# Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues, contract_name):
-    for issue in echidna_issues:
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Property Failure"
-                severity = "high"
-                explanation = (
-                    "Echidna detected a property violation during fuzzing. "
-                    "Review the contract's properties and ensure they are correctly implemented."
-                )
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                issues[contract_name].append((issue_message, "N/A", severity))
-    return issues
-
-# Function to add Mythril issues to the issues dictionary
-def add_mythril_issues(issues, mythril_issues):
-    for issue in mythril_issues:
-        contract, function, issue_message, severity = issue
-        issues[contract].append((issue_message, function, severity))
-    return issues
-
-# Function to process Echidna results
-def process_echidna(issues, echidna_output, contract_name):
-    echidna_issues = parse_echidna_results(echidna_output)
-    if echidna_issues:
-        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
-        for issue in echidna_issues:
-            print(Fore.YELLOW + issue)
-            logging.warning(f"Echidna Issue: {issue}")
-        issues = add_echidna_issues(issues, echidna_issues, contract_name)
-    else:
-        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
-        logging.info("No issues found during dynamic analysis (Echidna).")
-    return issues
-
-# Function to process Mythril results
-def process_mythril(issues, mythril_output):
-    mythril_issues = parse_mythril_results(mythril_output)
-    if mythril_issues:
-        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
-        for issue in mythril_issues:
-            print(Fore.YELLOW + issue[2])  # issue_message
-            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
-        issues = add_mythril_issues(issues, mythril_issues)
-    else:
-        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
-        logging.info("No issues found during symbolic execution (Mythril).")
-    return issues
-
-# Function to parse Echidna results
-def parse_echidna_results(echidna_output):
-    issues = []
-    lines = echidna_output.split('\n')
-    for line in lines:
-        if 'FAILURE:' in line or 'ERROR:' in line:
-            issues.append(line.strip())
-    return issues
-
-# Function to run Echidna fuzzing
-def run_echidna(contract_path, config_path):
-    try:
-        # Using Docker to run Echidna
-        cmd = [
-            'docker', 'run', '--rm',
-            '-v', f"{os.path.abspath(contract_path)}:/contracts/{os.path.basename(contract_path)}",
-            '-v', f"{os.path.abspath(config_path)}:/config/echidna_config.yaml",
-            'ghcr.io/crytic/echidna:latest',
-            '/bin/sh', '-c',
-            f"echidna-test /contracts/{os.path.basename(contract_path)} --config-file /config/{os.path.basename(config_path)}"
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(Fore.RED + "Echidna fuzzing failed.")
-        logging.error(f"Echidna error: {e.stderr}")
-        return e.stdout + e.stderr
-
-# Function to generate Echidna configuration with advanced settings
-def generate_echidna_config(contract_path, properties, config_path='echidna_config.yaml'):
-    with open(config_path, 'w') as file:
-        file.write(f"contract: {os.path.basename(contract_path)}\n")
-        file.write("test-mode: assertion\n")
-        file.write("verbosity: 3\n")
-        file.write("concurrency: 2\n")  # Increase concurrency for faster fuzzing
-        file.write("max-test-time: 60\n")  # Set maximum time per test case (in seconds)
-        file.write("max-number-of-tests: 10000\n")  # Increase number of test cases
-        file.write("fuzzing-strategy: stateful\n")  # Enable stateful fuzzing
-        file.write("seed: 42\n")  # Set a seed for reproducibility
-        file.write("properties:\n")
-        for prop in properties:
-            file.write(f"  - {prop}\n")
-    return config_path
-
-# Function to run Mythril symbolic execution
-def run_mythril(contract_path):
-    try:
-        cmd = [
-            'myth', 'analyze',
-            contract_path,
-            '--solv', 'auto',
-            '--json',
-            '--verbosity', '0'
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(Fore.RED + "Mythril analysis failed.")
-        logging.error(f"Mythril error: {e.stderr}")
-        return e.stdout + e.stderr
-
-# Function to parse Mythril results
-def parse_mythril_results(mythril_output):
-    issues = []
-    try:
-        results = json.loads(mythril_output)
-        for issue in results.get('issues', []):
-            contract = issue.get('contract')
-            function = issue.get('function', '')
-            issue_type = issue.get('title')
-            description = issue.get('description')
-            severity = issue.get('severity').lower()  # 'high', 'medium', 'low'
-
-            explanation = get_explanation(issue_type)
-
-            issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-            issues.append((contract, function, issue_message, severity))
-    except json.JSONDecodeError:
-        print(Fore.RED + "Failed to parse Mythril output.")
-        logging.error("Mythril output is not valid JSON.")
-    return issues
-
-# Function to add Echidna issues to the issues dictionary
-def add_echidna_issues(issues, echidna_issues, contract_name):
-    for issue in echidna_issues:
-        if 'FAILURE:' in issue:
-            parts = issue.split('FAILURE:')
-            if len(parts) > 1:
-                description = parts[1].strip()
-                issue_type = "Echidna Property Failure"
-                severity = "high"
-                explanation = (
-                    "Echidna detected a property violation during fuzzing. "
-                    "Review the contract's properties and ensure they are correctly implemented."
-                )
-                issue_message = f"{issue_type}: {description}\nExplanation: {explanation}"
-                issues[contract_name].append((issue_message, "N/A", severity))
-    return issues
-
-# Function to add Mythril issues to the issues dictionary
-def add_mythril_issues(issues, mythril_issues):
-    for issue in mythril_issues:
-        contract, function, issue_message, severity = issue
-        issues[contract].append((issue_message, function, severity))
-    return issues
-
-# Function to process Echidna results
-def process_echidna(issues, echidna_output, contract_name):
-    echidna_issues = parse_echidna_results(echidna_output)
-    if echidna_issues:
-        print(Fore.YELLOW + "Dynamic Analysis Issues Found (Echidna):\n")
-        for issue in echidna_issues:
-            print(Fore.YELLOW + issue)
-            logging.warning(f"Echidna Issue: {issue}")
-        issues = add_echidna_issues(issues, echidna_issues, contract_name)
-    else:
-        print(Fore.GREEN + "No issues found during dynamic analysis (Echidna).")
-        logging.info("No issues found during dynamic analysis (Echidna).")
-    return issues
-
-# Function to process Mythril results
-def process_mythril(issues, mythril_output):
-    mythril_issues = parse_mythril_results(mythril_output)
-    if mythril_issues:
-        print(Fore.YELLOW + "Symbolic Execution Issues Found (Mythril):\n")
-        for issue in mythril_issues:
-            print(Fore.YELLOW + issue[2])  # issue_message
-            logging.warning(f"Mythril Issue in {issue[0]}.{issue[1]}: {issue[2]}")
-        issues = add_mythril_issues(issues, mythril_issues)
-    else:
-        print(Fore.GREEN + "No issues found during symbolic execution (Mythril).")
-        logging.info("No issues found during symbolic execution (Mythril).")
-    return issues
-
-# Function to parse command-line arguments
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="Solidity Smart Contract Vulnerability Analyzer")
-    parser.add_argument("-c", "--contract", required=True, help="Path to the Solidity contract file")
-    parser.add_argument("-r", "--remappings", default="", help="Path to the remappings file")
-    parser.add_argument("-e", "--evm", required=True, choices=SUPPORTED_EVM_VERSIONS, help="EVM version to use")
-    parser.add_argument("-a", "--additional", default="", help="Comma-separated additional contract files")
-    parser.add_argument("-o", "--output", default="smart_contract_vulnerabilities.html", help="Output HTML report path")
-    return parser.parse_args()
-
-# Function to display issues in a table
-def display_issues(issues):
-    headers = ["Contract", "Function", "Issue Type", "Description", "Severity", "Explanation"]
-    rows = []
-    for contract, contract_issues in issues.items():
-        for issue, function, severity in contract_issues:
-            issue_info = issue.split(": ", 1)
-            if len(issue_info) < 2:
-                continue  # Skip malformed entries
-            issue_type = issue_info[0].strip()
-            description_part = issue_info[1].split("\nExplanation: ")
-            if len(description_part) < 2:
-                description = description_part[0].strip()
-                explanation = "No detailed explanation available."
-            else:
-                description = description_part[0].strip()
-                explanation = description_part[1].strip()
-            color = "red" if severity == "high" else "yellow" if severity == "medium" else "blue"
-            rows.append([
-                contract,
-                function,
-                colored(issue_type, color),
-                colored(description, color),
-                severity.capitalize(),
-                explanation
-            ])
-
-    print(tabulate(rows, headers, tablefmt="grid"))
-    return headers, rows
-
-# Function to save issues to an HTML file
-def save_issues_to_html(headers, rows, output_path):
-    # Enhanced styling with Bootstrap and interactive table using DataTables
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Smart Contract Vulnerabilities</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-        <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css"/>
-        <script src="https://code.jquery.com/jquery-3.5.1.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-        <script type="text/javascript" src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
-    </head>
-    <body>
-        <div class="container mt-5">
-            <h2>Smart Contract Vulnerabilities</h2>
-            <table id="issuesTable" class="table table-striped">
-                <thead>
-                    <tr>
-                        {''.join(f'<th>{html.escape(header)}</th>' for header in headers)}
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join('<tr>' + ''.join(f'<td>{html.escape(str(cell))}</td>' for cell in row) + '</tr>' for row in rows)}
-                </tbody>
-            </table>
-        </div>
-        <script>
-            $(document).ready(function() {{
-                $('#issuesTable').DataTable();
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    with open(output_path, 'w') as file:
-        file.write(html_content)
-
-# Main function to run the script
 def main():
+    """Main function to orchestrate the vulnerability analysis."""
     args = parse_arguments()
-
     contract_path = args.contract
-    remappings_file = args.remappings
-    evm_version = args.evm
-    additional_contracts = [contract.strip() for contract in args.additional.split(',') if contract.strip()]
-    output_path = args.output
 
-    # Validate paths
     if not os.path.exists(contract_path):
         print(Fore.RED + f"Error: The contract file {contract_path} does not exist.")
         logging.error(f"Contract file not found: {contract_path}")
         return
 
-    if remappings_file and not os.path.exists(remappings_file):
-        print(Fore.RED + f"Error: The remappings file {remappings_file} does not exist.")
-        logging.error(f"Remappings file not found: {remappings_file}")
-        return
-
-    for additional_contract in additional_contracts:
-        if not os.path.exists(additional_contract):
-            print(Fore.RED + f"Error: The additional contract file {additional_contract} does not exist.")
-            logging.error(f"Additional contract file not found: {additional_contract}")
-            return
-
     try:
-        # Extract and install the required Solidity version
+        # Step 1: Handle Solidity Compiler Version
+        print(Fore.CYAN + "Extracting and setting Solidity compiler version...")
         solc_version_spec = extract_solidity_version(contract_path)
-        logging.info(f"Extracted Solidity version: {solc_version_spec}")
-        # Install solc versions that satisfy the version spec
-        installed_versions = get_installed_solc_versions()
-        # solcx handles version specs like ^0.8.0 by installing compatible versions
-        # Here, we assume the user provides an exact version. For version ranges, additional parsing is needed.
-        solc_version = solc_version_spec  # This may need refinement based on version spec
-        if solc_version not in installed_versions:
-            install_solc(solc_version)
-            logging.info(f"Installed Solidity version: {solc_version}")
-        else:
-            logging.info(f"Solidity version {solc_version} already installed.")
-        
-    except ValueError as e:
-        print(Fore.RED + f"Error: {e}")
-        logging.error(f"Version extraction error: {e}")
-        return
-    except urllib.error.URLError as e:
-        print(Fore.RED + f"Network error: {e}. Ensure you have an active internet connection and try again.")
-        logging.error(f"Network error during solc installation: {e}")
-        return
-    except Exception as e:
-        print(Fore.RED + f"Unexpected error: {e}")
-        logging.error(f"Unexpected error during solc installation: {e}")
-        return
+        install_solc_version_pragma(solc_version_spec)
+        set_solc_version_pragma(solc_version_spec)
+        logging.info(f"Using Solidity version compatible with: {solc_version_spec}")
+        print(Fore.GREEN + "Compiler version set successfully.")
 
-    # Compile the contract
-    try:
-        compiled_contract = compile_contract(contract_path, solc_version, evm_version)
-        logging.info("Contract compiled successfully.")
-        print(Fore.GREEN + "Contract compiled successfully")
-    except Exception as e:
-        print(Fore.RED + f"Error compiling contract: {e}")
-        logging.error(f"Compilation error: {e}")
-        return
-
-    # Detect issues using Slither
-    try:
-        issues = detect_issues(contract_path, solc_version, evm_version)
+        # Step 2: Static Analysis with Slither
+        print(Fore.CYAN + "\nRunning static analysis with Slither...")
+        all_issues = run_slither_analysis(contract_path, args.evm)
         logging.info("Static analysis (Slither) completed.")
-    except Exception as e:
-        print(Fore.RED + f"Error detecting issues: {str(e)}")
-        logging.error(f"Static analysis error: {e}")
-        return
+        print(Fore.GREEN + "Slither analysis complete.")
 
-    # Proceed with dynamic analysis using Echidna
-    try:
-        # Define properties for Echidna based on contract's functions or predefined rules
-        # For demonstration, assume properties are predefined
-        properties = [
-            "ownerShouldNeverBeZero",
-            "onlyOwnerCanWithdraw",
-            "totalSupplyNeverOverflows",
-            "noUnexpectedSelfDestruct"
-        ]
-        config_path = generate_echidna_config(contract_path, properties)
-
-        print(Fore.CYAN + "Running Echidna fuzzing for dynamic analysis...")
+        # Step 3: Dynamic Analysis with Echidna (optional, can be commented out)
+        print(Fore.CYAN + "\nRunning dynamic analysis with Echidna...")
+        config_path = generate_echidna_config(contract_path)
         echidna_output = run_echidna(contract_path, config_path)
-        logging.info("Echidna fuzzing completed.")
-        print(Fore.GREEN + "Echidna fuzzing completed.")
-
-        # Extract the contract name without extension for reporting
         contract_name = os.path.splitext(os.path.basename(contract_path))[0]
+        all_issues = process_echidna_results(all_issues, echidna_output, contract_name)
+        logging.info("Dynamic analysis (Echidna) completed.")
 
-        issues = process_echidna(issues, echidna_output, contract_name)
-
-    except Exception as e:
-        print(Fore.RED + f"Error during dynamic analysis: {str(e)}")
-        logging.error(f"Dynamic analysis error: {e}")
-        return
-
-    # Proceed with symbolic execution using Mythril
-    try:
-        print(Fore.CYAN + "Running Mythril symbolic execution for vulnerability detection...")
+        # Step 4: Symbolic Execution with Mythril (optional, can be commented out)
+        print(Fore.CYAN + "\nRunning symbolic execution with Mythril...")
         mythril_output = run_mythril(contract_path)
-        issues = process_mythril(issues, mythril_output)
-    except Exception as e:
-        print(Fore.RED + f"Error during symbolic execution: {str(e)}")
-        logging.error(f"Symbolic execution error: {e}")
-        return
+        all_issues = process_mythril_results(all_issues, mythril_output)
+        logging.info("Symbolic execution (Mythril) completed.")
 
-    # Display issues in console
-    if issues:
-        print(Fore.YELLOW + "\n=== Vulnerabilities Detected ===\n")
-        headers, rows = display_issues(issues)
-        save_issues_to_html(headers, rows, output_path)
-        print(Fore.GREEN + f"\nIssues saved to {output_path}")
-        logging.info(f"Issues saved to {output_path}")
-    else:
-        print(Fore.GREEN + "\nNo issues found.")
-        logging.info("No issues found.")
+        # Step 5: Report Results
+        if any(all_issues.values()):
+            print(Fore.YELLOW + "\n\n=== Vulnerability Report ===\n")
+            headers, rows = display_issues(all_issues)
+            save_issues_to_html(headers, rows, args.output)
+            print(Fore.GREEN + f"\nFull report saved to {args.output}")
+        else:
+            print(Fore.GREEN + "\n\n✅ No vulnerabilities found by any tool.")
+            logging.info("Analysis complete. No issues found.")
+
+    except Exception as e:
+        print(Fore.RED + f"\nAn error occurred: {e}")
+        logging.error(f"An unexpected error terminated the script: {e}")
 
 if __name__ == "__main__":
     main()
